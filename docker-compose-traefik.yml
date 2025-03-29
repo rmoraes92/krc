@@ -1,0 +1,155 @@
+services:
+  socat:
+    image: alpine/socat
+    command: tcp-listen:2375,fork,reuseaddr unix-connect:/var/run/docker.sock
+    security_opt:
+      - label=disable
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:z
+
+  api:
+    depends_on:
+      - socat
+    image: "traefik:v3.3"
+    command:
+      - "--log.level=DEBUG"
+      - "--api.insecure=true"
+      - "--providers.docker=true"
+      - "--providers.docker.exposedbydefault=false"
+      - "--providers.docker.endpoint=tcp://socat:2375"
+      - "--entryPoints.web.address=:80"
+    ports:
+      - "80:80"
+      - "8080:8080"
+    environment:
+      DOCKER_HOST: socat:2375
+
+  kafka1:
+    image: apache/kafka
+    ports:
+      - "9092:9092"
+    environment:
+      # Configure listeners for both docker and host communication
+      KAFKA_LISTENERS: CONTROLLER://localhost:9091,HOST://0.0.0.0:9092,DOCKER://0.0.0.0:9093
+      KAFKA_ADVERTISED_LISTENERS: HOST://localhost:9092,DOCKER://kafka1:9093
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,DOCKER:PLAINTEXT,HOST:PLAINTEXT
+      # Settings required for KRaft mode
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@localhost:9091
+      # Listener to use for broker-to-broker communication
+      KAFKA_INTER_BROKER_LISTENER_NAME: DOCKER
+      # Required for a single node cluster
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+
+  redis1:
+    image: redis:7-alpine
+ 
+  # Web App
+  # ==========================================================================
+  webapp1:
+    image: krc/webapp:latest
+    build:
+      context: ./src/app
+      dockerfile: Dockerfile
+    ports:
+      - 8081:80
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.webapp.rule=(Host(`localhost`)||Host(`api`)) && PathPrefix(`/`)"
+      - "traefik.http.routers.webapp.entrypoints=web"
+      #- "traefik.http.routers.webapp.middlewares=strip-webapp-prefix"
+      #- "traefik.http.middlewares.strip-webapp-prefix.stripprefix.prefixes=/web"
+
+  # ReST API
+  # ==========================================================================
+  signup1:
+    image: krc/signup:latest
+    build:
+      context: ./src/api/
+      dockerfile: Dockerfile
+      args:
+        SERVICE_MODULE: signup.py
+    environment:
+      REDIS_HOST: redis1
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.signup.rule=(Host(`localhost`)||Host(`api`)) && PathPrefix(`/signup`)"
+      - "traefik.http.routers.signup.entrypoints=web"
+
+  signin1:
+    image: krc/signin:latest
+    build:
+      context: ./src/api/
+      dockerfile: Dockerfile
+      args:
+        - SERVICE_MODULE=signin.py
+    environment:
+      REDIS_HOST: redis1
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.signin.rule=(Host(`localhost`)||Host(`api`)) && PathPrefix(`/signin`)"
+      - "traefik.http.routers.signin.entrypoints=web"
+
+  auth1:
+    image: krc/auth:latest
+    build:
+      context: ./src/api/
+      dockerfile: Dockerfile
+      args:
+        - SERVICE_MODULE=auth.py
+    environment:
+      REDIS_HOST: redis1
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.auth.rule=(Host(`localhost`) || Host(`api`)) && PathPrefix(`/auth`)"
+      - "traefik.http.routers.auth.entrypoints=web"
+
+  channels1:
+    image: krc/channels:latest
+    build:
+      context: ./src/api/
+      dockerfile: Dockerfile
+      args:
+        - SERVICE_MODULE=channels.py
+    environment:
+      REDIS_HOST: redis1
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.channels.rule=(Host(`localhost`)||Host(`api`)) && PathPrefix(`/channels`)"
+      - "traefik.http.routers.channels.entrypoints=web"
+
+  messages1:
+    depends_on:
+      - kafka1
+    image: krc/messages:latest
+    build:
+      context: ./src/api/
+      dockerfile: Dockerfile
+      args:
+        - SERVICE_MODULE=messages.py
+    environment:
+      REDIS_HOST: redis1
+      KAFKA_SERVERS: kafka1:9093
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.messages.rule=(Host(`localhost`)||Host(`api`)) && PathPrefix(`/messages`)"
+      - "traefik.http.routers.messages.entrypoints=web"
+
+  stream_messages1:
+    depends_on:
+      - kafka1
+    image: krc/stream_messages:latest
+    build:
+      context: ./src/api/
+      dockerfile: Dockerfile
+      args:
+        - SERVICE_MODULE=stream_messages.py
+    environment:
+      REDIS_HOST: redis1
+      KAFKA_SERVERS: kafka1:9093
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.stream_messages.rule=(Host(`localhost`)||Host(`api`)) && PathPrefix(`/stream_messages`)"
+      - "traefik.http.routers.stream_messages.entrypoints=web"
