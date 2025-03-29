@@ -1,0 +1,108 @@
+services:
+  webapp1:
+    image: krc/webapp:latest
+    build:
+      context: ./src/app
+      dockerfile: Dockerfile
+    ports:
+      - 8080:80
+
+  kafka1:
+    image: apache/kafka
+    ports:
+      - "9092:9092"
+    environment:
+      # Configure listeners for both docker and host communication
+      KAFKA_LISTENERS: CONTROLLER://localhost:9091,HOST://0.0.0.0:9092,DOCKER://0.0.0.0:9093
+      KAFKA_ADVERTISED_LISTENERS: HOST://localhost:9092,DOCKER://kafka1:9093
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,DOCKER:PLAINTEXT,HOST:PLAINTEXT
+      # Settings required for KRaft mode
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@localhost:9091
+      # Listener to use for broker-to-broker communication
+      KAFKA_INTER_BROKER_LISTENER_NAME: DOCKER
+      # Required for a single node cluster
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+
+  redis1:
+    image: redis:7-alpine
+
+  redis1-ui:
+    image: redis/redisinsight:latest
+    ports:
+      - 5540:5540
+  api:
+    image: krc/nginx-proxy:latest
+    build:
+      context: ./src/nginx-proxy
+      dockerfile: Dockerfile
+    ports:
+      - 80:80
+
+  signup1:
+    image: krc/signup:latest
+    build:
+      context: ./src/api/
+      dockerfile: Dockerfile
+      args:
+        SERVICE_MODULE: signup.py
+    environment:
+      REDIS_HOST: redis1
+
+  signin1:
+    image: krc/signin:latest
+    build:
+      context: ./src/api/
+      dockerfile: Dockerfile
+      args:
+        - SERVICE_MODULE=signin.py
+    environment:
+      REDIS_HOST: redis1
+
+  auth1:
+    image: krc/auth:latest
+    build:
+      context: ./src/api/
+      dockerfile: Dockerfile
+      args:
+        - SERVICE_MODULE=auth.py
+    environment:
+      REDIS_HOST: redis1
+
+  channels1:
+    image: krc/channels:latest
+    build:
+      context: ./src/api/
+      dockerfile: Dockerfile
+      args:
+        - SERVICE_MODULE=channels.py
+    environment:
+      REDIS_HOST: redis1
+
+  messages1:
+    depends_on:
+      - kafka1
+    image: krc/messages:latest
+    build:
+      context: ./src/api/
+      dockerfile: Dockerfile
+      args:
+        - SERVICE_MODULE=messages.py
+    environment:
+      REDIS_HOST: redis1
+      KAFKA_SERVERS: kafka1:9093
+
+  stream_messages1:
+    depends_on:
+      - kafka1
+    image: krc/stream_messages:latest
+    build:
+      context: ./src/api/
+      dockerfile: Dockerfile
+      args:
+        - SERVICE_MODULE=stream_messages.py
+    environment:
+      REDIS_HOST: redis1
+      KAFKA_SERVERS: kafka1:9093
